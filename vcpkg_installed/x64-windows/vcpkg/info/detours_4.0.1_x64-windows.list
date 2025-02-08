@@ -1,0 +1,16 @@
+x64-windows/
+x64-windows/debug/
+x64-windows/debug/lib/
+x64-windows/debug/lib/detours.lib
+x64-windows/include/
+x64-windows/include/detours/
+x64-windows/include/detours/detours.h
+x64-windows/include/detours/detver.h
+x64-windows/lib/
+x64-windows/lib/detours.lib
+x64-windows/share/
+x64-windows/share/detours/
+x64-windows/share/detours/copyright
+x64-windows/share/detours/usage
+x64-windows/share/detours/vcpkg.spdx.json
+x64-windows/share/detours/vcpkg_abi_info.txt
