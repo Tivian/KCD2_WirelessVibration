@@ -200,9 +200,50 @@ IGameInputDevice* GetCurrentGamepad() {
     return currentDevice;
 }
 
-class GameInputDevice : public IGameInputDevice {
+static void ConvertXInputToGameInput(const XINPUT_STATE& xinputState, GameInputGamepadState* state) {
+    const XINPUT_GAMEPAD& xgamepad = xinputState.Gamepad;
+
+    state->buttons = GameInputGamepadNone;
+
+    state->leftThumbstickX = static_cast<float>(static_cast<double>(xgamepad.sThumbLX) / 32767.0);
+    state->leftThumbstickY = static_cast<float>(static_cast<double>(xgamepad.sThumbLY) / 32767.0);
+    state->rightThumbstickX = static_cast<float>(static_cast<double>(xgamepad.sThumbRX) / 32767.0);
+    state->rightThumbstickY = static_cast<float>(static_cast<double>(xgamepad.sThumbRY) / 32767.0);
+    state->leftTrigger = static_cast<float>(static_cast<double>(xgamepad.bLeftTrigger) / 255.0);
+    state->rightTrigger = static_cast<float>(static_cast<double>(xgamepad.bRightTrigger) / 255.0);
+
+    state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_A) != 0 ? GameInputGamepadA : GameInputGamepadNone;
+    state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_B) != 0 ? GameInputGamepadB : GameInputGamepadNone;
+    state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_X) != 0 ? GameInputGamepadX : GameInputGamepadNone;
+    state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_Y) != 0 ? GameInputGamepadY : GameInputGamepadNone;
+
+    state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_START) != 0 ? GameInputGamepadMenu : GameInputGamepadNone;
+    state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_BACK) != 0 ? GameInputGamepadView : GameInputGamepadNone;
+
+    state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP) != 0 ? GameInputGamepadDPadUp : GameInputGamepadNone;
+    state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) != 0 ? GameInputGamepadDPadDown : GameInputGamepadNone;
+    state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) != 0 ? GameInputGamepadDPadLeft : GameInputGamepadNone;
+    state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0 ? GameInputGamepadDPadRight : GameInputGamepadNone;
+
+    state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0 ? GameInputGamepadLeftShoulder : GameInputGamepadNone;
+    state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0 ? GameInputGamepadRightShoulder : GameInputGamepadNone;
+
+    state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_LEFT_THUMB) != 0 ? GameInputGamepadLeftThumbstick : GameInputGamepadNone;
+    state->buttons |= (xgamepad.wButtons & XINPUT_GAMEPAD_RIGHT_THUMB) != 0 ? GameInputGamepadRightThumbstick : GameInputGamepadNone;
+}
+
+class GameInputDeviceState {
 public:
-    explicit GameInputDevice() {
+    int xinputSlot = -1;
+};
+
+class GameInputDevice : public IGameInputDevice {
+private:
+    GameInputDeviceState* _deviceState;
+
+public:
+    explicit GameInputDevice(GameInputDeviceState* deviceState)
+        : _deviceState(deviceState) {
         LOG_FUNCTION_CALL;
     }
 
@@ -401,10 +442,14 @@ public:
 
 class GameInputReading : public IGameInputReading {
 private:
-    uint64_t _timestamp = 0;
+    LARGE_INTEGER _timestamp = {};
+    XINPUT_STATE _lastXinputState = {};
+    GameInputDeviceState* _deviceState;
+    bool _logAllXinputErrorsOnce = true;
 
 public:
-    explicit GameInputReading() {
+    explicit GameInputReading(GameInputDeviceState* deviceState)
+        : _deviceState(deviceState) {
         LOG_FUNCTION_CALL;
     }
 
@@ -435,7 +480,7 @@ public:
 
     uint64_t GetTimestamp() noexcept override {
         LOG_FUNCTION_CALL;
-        return _timestamp;
+        return _timestamp.QuadPart;
     }
 
     void GetDevice(IGameInputDevice** device) noexcept override {
@@ -520,7 +565,7 @@ public:
     bool GetGamepadState(GameInputGamepadState* state) noexcept override {
         LOG_FUNCTION_CALL;
 
-        IGameInputDevice* device = GetCurrentGamepad();
+        /*IGameInputDevice* device = GetCurrentGamepad();
         if (device == nullptr)
             return false;
 
@@ -529,7 +574,51 @@ public:
             return false;
 
         _timestamp = reading->GetTimestamp();
-        return reading->GetGamepadState(state);
+        return reading->GetGamepadState(state);*/
+
+        XINPUT_STATE xinputState;
+        bool xinputSuccess = false;
+
+        ZeroMemory(&xinputState, sizeof(XINPUT_STATE));
+        ZeroMemory(state, sizeof(GameInputGamepadState));
+
+        auto xinputSlot = _deviceState->xinputSlot;
+
+        if (xinputSlot == -1) {
+            for (DWORD i = 0; i < XUSER_MAX_COUNT; i++) {
+                int result = XInputGetState(i, &xinputState);
+
+                if (result == ERROR_SUCCESS) {
+                    xinputSuccess = true;
+                    _deviceState->xinputSlot = i;
+                    break;
+                }
+            }
+
+            _logAllXinputErrorsOnce = false;
+        } else {
+            int result = XInputGetState(xinputSlot, &xinputState);
+
+            if (result == ERROR_SUCCESS) {
+                xinputSuccess = true;
+            } else {
+                _logAllXinputErrorsOnce = true;
+            }
+        }
+
+        if (xinputSuccess) {
+            if (std::exchange(_lastXinputState.dwPacketNumber, xinputState.dwPacketNumber) < xinputState.dwPacketNumber) {
+                QueryPerformanceCounter(&_timestamp);
+            }
+
+            ConvertXInputToGameInput(xinputState, state);
+        } else {
+            _timestamp = {};
+            _deviceState->xinputSlot = -1;
+            _lastXinputState.dwPacketNumber = 0;
+        }
+
+        return xinputSuccess;
     }
 
     bool GetRacingWheelState(GameInputRacingWheelState* state) noexcept override {
@@ -545,8 +634,9 @@ public:
 
 class GameInput : public IGameInput {
 private:
-    GameInputDevice _device{ };
-    GameInputReading _reading{ };
+    GameInputDeviceState _deviceState{};
+    GameInputDevice _device{ &_deviceState };
+    GameInputReading _reading{ &_deviceState };
     UINT64 _lastGamepadReading = 0;
 
 public:
