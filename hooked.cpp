@@ -6,13 +6,16 @@
 #include <string>
 #include <ctime>
 #include <iomanip>
+#include <mutex>
 #include <Xinput.h>
 #include <GameInput.h>
 
 // Let's use randomly generated binary string for device identification
 #define EMU_DEVICE_ID { 0x68, 0xC1, 0xE3, 0x1E, 0xF6, 0x5C, 0xB2, 0xC0, 0xFC, 0xBB, 0x5A, 0x26, 0xB4, 0x6A, 0x42, 0x39, 0xCF, 0x83, 0x4E, 0xEB, 0x03, 0xB8, 0xE6, 0x10, 0xAF, 0x34, 0x60, 0x77, 0xF3, 0x13, 0x7D, 0x75 }
 
-//#define VERBOSE
+#ifdef _DEBUG
+#define VERBOSE
+#endif
 #ifdef VERBOSE
 #define LOG_FUNCTION_CALL log(__FUNCSIG__)
 #else
@@ -32,22 +35,28 @@ std::string getCurrentTimestamp() {
     oss << std::put_time(&localTime, "%Y-%m-%d %H:%M:%S");
     return oss.str();
 }
+std::mutex log_mutex;
 #endif
 
 void log(std::string message) {
 #ifdef VERBOSE
     if (!logFile.is_open()) {
-        logFile.open("xinput.log", std::ios::app | std::ios::out);
-        sprintf(buffer, "\n\n > New process '%s'", GetCommandLine());
+        logFile.open("KCD2_WirelessVibration.log", std::ios::app | std::ios::out);
+        sprintf_s(buffer, "\n\n > New process '%ws'", GetCommandLine());
         log(buffer);
     }
 
+    log_mutex.lock();
     logFile << "[" << getCurrentTimestamp() << "] " << message << std::endl;
+    log_mutex.unlock();
 #endif
 }
 
 #ifdef VERBOSE
 std::string GetInfo(const GameInputDeviceInfo* info) {
+    if (info == nullptr)
+        return "NULL";
+
     std::ostringstream oss;
     oss << "Info Size: " << info->infoSize << "\n";
     oss << "Vendor ID: 0x" << std::hex << info->vendorId << "\n";
@@ -173,7 +182,9 @@ void CALLBACK OnDeviceConnectionChanged(
 
 IGameInputDevice* GetCurrentGamepad() {
     if (gameInput == nullptr) {
-        TrueGameInputCreate(&gameInput);
+        if (FAILED(TrueGameInputCreate(&gameInput)))
+            return nullptr;
+
         gameInput->RegisterDeviceCallback(
             nullptr,
             GameInputKind::GameInputKindGamepad,
@@ -193,7 +204,10 @@ IGameInputDevice* GetCurrentGamepad() {
             return nullptr;
         reading->GetDevice(&currentDevice);
 #ifdef VERBOSE
-        log("Found new gamepad");
+        if (currentDevice != nullptr) {
+            log("Found new gamepad");
+            log(GetInfo(currentDevice->GetDeviceInfo()));
+        }
 #endif
     }
 
@@ -354,6 +368,7 @@ public:
 
     void GetBatteryState(GameInputBatteryState* state) noexcept override {
         LOG_FUNCTION_CALL;
+        memset(state, 0, sizeof(GameInputBatteryState));
     }
 
     HRESULT CreateForceFeedbackEffect(uint32_t motorIndex, const GameInputForceFeedbackParams* params, IGameInputForceFeedbackEffect** effect) noexcept override {
@@ -377,8 +392,11 @@ public:
 
     void SetRumbleState(const GameInputRumbleParams* params) noexcept override {
         LOG_FUNCTION_CALL;
+        if (params == nullptr)
+            return;
+
 #ifdef VERBOSE
-        sprintf(buffer, "Set Rumble State: [ Low Frequency: %.2f | High Frequency: %.2f | Left Trigger: %.2f | Right Trigger: %.2f ]",
+        sprintf_s(buffer, "Set Rumble State: [ Low Frequency: %.2f | High Frequency: %.2f | Left Trigger: %.2f | Right Trigger: %.2f ]",
             params->lowFrequency, params->highFrequency, params->leftTrigger, params->rightTrigger);
         log(buffer);
 #endif
@@ -485,10 +503,12 @@ public:
 
     void GetDevice(IGameInputDevice** device) noexcept override {
         LOG_FUNCTION_CALL;
+        *device = GetCurrentGamepad();
     }
 
     bool GetRawReport(IGameInputRawDeviceReport** report) noexcept override {
         LOG_FUNCTION_CALL;
+        *report = nullptr;
         return false;
     }
 
@@ -534,6 +554,7 @@ public:
 
     bool GetMouseState(GameInputMouseState* state) noexcept override {
         LOG_FUNCTION_CALL;
+        memset(state, 0, sizeof(GameInputMouseState));
         return false;
     }
 
@@ -549,32 +570,24 @@ public:
 
     bool GetMotionState(GameInputMotionState* state) noexcept override {
         LOG_FUNCTION_CALL;
+        memset(state, 0, sizeof(GameInputMotionState));
         return false;
     }
 
     bool GetArcadeStickState(GameInputArcadeStickState* state) noexcept override {
         LOG_FUNCTION_CALL;
+        memset(state, 0, sizeof(GameInputArcadeStickState));
         return false;
     }
 
     bool GetFlightStickState(GameInputFlightStickState* state) noexcept override {
         LOG_FUNCTION_CALL;
+        memset(state, 0, sizeof(GameInputFlightStickState));
         return false;
     }
 
     bool GetGamepadState(GameInputGamepadState* state) noexcept override {
         LOG_FUNCTION_CALL;
-
-        /*IGameInputDevice* device = GetCurrentGamepad();
-        if (device == nullptr)
-            return false;
-
-        IGameInputReading* reading;
-        if (FAILED(gameInput->GetCurrentReading(GameInputKind::GameInputKindGamepad, device, &reading)))
-            return false;
-
-        _timestamp = reading->GetTimestamp();
-        return reading->GetGamepadState(state);*/
 
         XINPUT_STATE xinputState;
         bool xinputSuccess = false;
@@ -623,11 +636,13 @@ public:
 
     bool GetRacingWheelState(GameInputRacingWheelState* state) noexcept override {
         LOG_FUNCTION_CALL;
+        memset(state, 0, sizeof(GameInputRacingWheelState));
         return false;
     }
 
     bool GetUiNavigationState(GameInputUiNavigationState* state) noexcept override {
         LOG_FUNCTION_CALL;
+        memset(state, 0, sizeof(GameInputUiNavigationState));
         return false;
     }
 };
@@ -802,7 +817,7 @@ __declspec(dllexport) BOOL WINAPI DllMain(HINSTANCE hinst, DWORD dwReason, LPVOI
         if (TrueGameInputCreate == nullptr) {
             TrueGameInputCreate = (GameInputCreate_t)DetourFindFunction("GameInput.dll", "GameInputCreate");
 #ifdef VERBOSE
-            sprintf(buffer, "TrueGameInputCreate: %p", TrueGameInputCreate);
+            sprintf_s(buffer, "TrueGameInputCreate: %p", TrueGameInputCreate);
             log(buffer);
 #endif
         }
@@ -817,7 +832,7 @@ __declspec(dllexport) BOOL WINAPI DllMain(HINSTANCE hinst, DWORD dwReason, LPVOI
         err = DetourTransactionBegin();
         if (err != NO_ERROR) {
 #ifdef VERBOSE
-            sprintf(buffer, "DetourTransactionBegin failed: %X", err);
+            sprintf_s(buffer, "DetourTransactionBegin failed: %X", err);
             log(buffer);
 #endif
             return FALSE;
@@ -826,7 +841,7 @@ __declspec(dllexport) BOOL WINAPI DllMain(HINSTANCE hinst, DWORD dwReason, LPVOI
         err = DetourUpdateThread(GetCurrentThread());
         if (err != NO_ERROR) {
 #ifdef VERBOSE
-            sprintf(buffer, "DetourUpdateThread failed: %X", err);
+            sprintf_s(buffer, "DetourUpdateThread failed: %X", err);
             log(buffer);
 #endif
             return FALSE;
@@ -835,7 +850,7 @@ __declspec(dllexport) BOOL WINAPI DllMain(HINSTANCE hinst, DWORD dwReason, LPVOI
         err = DetourAttach(&(PVOID&)TrueGameInputCreate, HookedGameInputCreate);
         if (err != NO_ERROR) {
 #ifdef VERBOSE
-            sprintf(buffer, "DetourAttach failed: %X", err);
+            sprintf_s(buffer, "DetourAttach failed: %X", err);
             log(buffer);
 #endif
             return FALSE;
@@ -844,7 +859,7 @@ __declspec(dllexport) BOOL WINAPI DllMain(HINSTANCE hinst, DWORD dwReason, LPVOI
         err = DetourTransactionCommit();
         if (err != NO_ERROR) {
 #ifdef VERBOSE
-            sprintf(buffer, "DetourTransactionCommit failed: %X", err);
+            sprintf_s(buffer, "DetourTransactionCommit failed: %X", err);
             log(buffer);
 #endif
             return FALSE;
